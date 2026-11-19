@@ -808,6 +808,7 @@ input[type=date]{color-scheme:dark;font-family:ui-monospace,"SF Mono",Menlo,mono
   </div>
   <div class="ctl" id="layerCtl">
     <select id="layer" title="Satellite layer"></select>
+    <a class="btn sm" id="hiresBtn" href="hires.html" style="color:#ffd9a0;border-color:rgba(255,180,84,.5);text-decoration:none">🔍 Hi-res</a>
     <button class="btn sm on" id="lblBtn" title="Place names & borders">Labels</button>
     <button class="btn sm" id="cmpBtn" title="Side-by-side compare two dates">Compare</button>
     <span id="spin"></span>
@@ -1215,6 +1216,10 @@ function saveHash(){
   if(S.pin) p.set('p', `${S.pin.lat.toFixed(5)},${S.pin.lng.toFixed(5)}`);
   p.set('s', S.step); p.set('a', S.area);
   try{ history.replaceState(null, '', '#' + p.toString()); }catch(e){}
+  const h = new URLSearchParams(), hz = Math.min(19, Math.max(12, map.getZoom()+6));
+  const hc = S.pin || c; h.set('c', `${hc.lat.toFixed(5)},${hc.lng.toFixed(5)},${S.pin ? Math.max(hz,16) : hz}`);
+  if(S.pin) h.set('p', `${S.pin.lat.toFixed(5)},${S.pin.lng.toFixed(5)}`);
+  const hb = document.getElementById('hiresBtn'); if(hb) hb.href = 'hires.html#' + h.toString();
 }
 map.on('moveend', saveHash);
 
