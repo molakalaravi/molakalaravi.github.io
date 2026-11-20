@@ -849,8 +849,8 @@ input[type=date]{color-scheme:dark;font-family:ui-monospace,"SF Mono",Menlo,mono
         <option value="day">Every day</option>
         <option value="week">Every week</option>
         <option value="weekbest" selected>Weekly · clearest day</option>
-        <option value="month">Every month</option>
-        <option value="year">Same day each year</option>
+        <option value="month">Every month · clearest day</option>
+        <option value="year">Each year · clearest day</option>
       </select>
       <select id="count" title="How many">
         <option>12</option><option selected>24</option><option>52</option>
@@ -1082,8 +1082,8 @@ function groups(){
     if(S.step==='day')        g = {dates:[addDays(e,-i)]};
     else if(S.step==='week')  g = {dates:[addDays(e,-7*i)]};
     else if(S.step==='weekbest'){ const end = addDays(e,-7*i); g = {dates:[0,1,2,3,4,5,6].map(k=>addDays(end,-k)), week:addDays(end,-6)}; }
-    else if(S.step==='month') g = {dates:[addMonths(e,-i)]};
-    else                      g = {dates:[addMonths(e,-12*i)]};
+    else { const end = S.step==='month' ? addMonths(e,-i) : addMonths(e,-12*i);   // clearest day in the week ending then
+           g = {dates:[0,1,2,3,4,5,6].map(k=>addDays(end,-k))}; }
     g.dates = g.dates.filter(d=> d >= L_().start);
     if(g.dates.length) out.push(g);
   }
@@ -1107,7 +1107,7 @@ function loadScored(url, cors=true){
         const x = c.getContext('2d', {willReadFrequently:true}); x.drawImage(img,0,0,64,64);
         const d = x.getImageData(0,0,64,64).data; let cl=0, nd=0; const n = d.length/4;
         for(let i=0;i<d.length;i+=4){ const r=d[i],g=d[i+1],b=d[i+2], mx=Math.max(r,g,b), mn=Math.min(r,g,b);
-          if(r+g+b < 24) nd++; else if(mx > 185 && mx-mn < 38) cl++; }
+          if(mx <= 4) nd++; else if(mx > 185 && mx-mn < 38) cl++; }  // only pure black = no data (dark sea is not)
         score = {cloud: cl/Math.max(1,n-nd), nodata: nd/n};
       }catch(e){}
       res({ok:true, url, score});
