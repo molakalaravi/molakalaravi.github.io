@@ -781,7 +781,7 @@ select option{background:#121924}
 
 <section id="panel">
   <div class="row">
-    <select id="src" title="Imagery source"><option value="esri">Esri hi-res (~0.5 m)</option><option value="s2s">Sentinel-2 latest passes (10 m)</option><option value="s2">Sentinel-2 yearly (10 m)</option></select>
+    <select id="src" title="Imagery source"><option value="esri">Esri hi-res (~0.5 m)</option><option value="s2s">Sentinel-2 latest passes (10 m)</option><option value="s2">Sentinel-2 yearly (10 m)</option><option value="ls">Landsat (30 m, since 1984)</option></select>
     <span class="lbl">Version</span>
     <button class="btn sm" id="older" title="Older version">‹ Older</button>
     <select id="rel"></select>
@@ -804,9 +804,6 @@ select option{background:#121924}
         <option value="17">Block (~900 m)</option><option value="18">Building (~450 m)</option>
       </select>
       <select id="s2int" title="Which passes" style="display:none">
-        <option value="scene">Every clear pass · last 6 months</option>
-        <option value="month" selected>Clearest each month · last 2 years</option>
-        <option value="quarter">Clearest each quarter · since 2019</option>
       </select>
       <button class="btn sm" id="ttPlay">⛶ Time-lapse</button>
     </div>
@@ -845,15 +842,39 @@ const S = { items:[], esri:[], idx:0, idxB:0, pin:null, labels:true, compare:fal
 const S2_YEARS = [2024,2023,2022,2021,2020,2019,2018,2016];
 const S2_ITEMS = S2_YEARS.map(y=>({s2:true, releaseNum:null, releaseDateLabel:String(y), releaseDatetime:Date.UTC(y,6,1),
   itemURL:`https://tiles.maps.eox.at/wmts/1.0.0/${y===2016?'s2cloudless':'s2cloudless-'+y}_3857/default/g/{level}/{row}/{col}.jpg`}));
-const nativeMax = it => it.s2 ? 15 : it.s2s ? 16 : 19;
+const nativeMax = it => it.s2 ? 15 : it.s2s ? it.maxNative : 19;
 /* Sentinel-2 individual passes from Microsoft Planetary Computer (free, no key) */
 const PC_STAC = 'https://planetarycomputer.microsoft.com/api/stac/v1/search';
 const pcTile = id => `https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/{level}/{col}/{row}@1x?collection=sentinel-2-l2a&item=${encodeURIComponent(id)}&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png`;
-const S2S_MODES = { scene:{from:()=>monthsAgo(6), maxCloud:30}, month:{from:()=>monthsAgo(24), maxCloud:60, group:'m'}, quarter:{from:()=>'2019-01-01', maxCloud:60, group:'q'} };
+const LS_PARAMS = 'assets=red&assets=green&assets=blue&color_formula=gamma+RGB+2.7%2C+saturation+1.5%2C+sigmoidal+RGB+15+0.55&nodata=0&format=png';
+/* scene-based sources: every satellite pass, searched at the pin */
+const SCENE_SRC = {
+  s2s:{ collection:'sentinel-2-l2a', label:'Sentinel-2', res:'10 m', maxNative:16, thumbZ:13, sceneKm:110,
+        tile: id => pcTile(id),
+        attr:'Sentinel-2 L2A (contains modified Copernicus Sentinel data) via Microsoft Planetary Computer · Search © OpenStreetMap',
+        modes:[ ['scene','Every clear pass · last 6 months',{from:()=>monthsAgo(6), maxCloud:30}],
+                ['month','Clearest each month · last 2 years',{from:()=>monthsAgo(24), maxCloud:60, group:'m'}, true],
+                ['monthall','Clearest each month · since 2017',{from:()=>'2017-01-01', maxCloud:60, group:'m'}],
+                ['quarter','Clearest each quarter · since 2016',{from:()=>'2016-01-01', maxCloud:60, group:'q'}],
+                ['year','Clearest each year · since 2016',{from:()=>'2016-01-01', maxCloud:40, group:'y'}] ] },
+  ls:{ collection:'landsat-c2-l2', label:'Landsat', res:'30 m', maxNative:14, thumbZ:12, sceneKm:185,
+       tile: id => `https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/{level}/{col}/{row}@1x?collection=landsat-c2-l2&item=${encodeURIComponent(id)}&${LS_PARAMS}`,
+       /* skip Landsat 7 after its 2003 scan-line fault (striped images) and Landsat 4 */
+       keep: (id,d) => !(id.startsWith('LE07') && d > '2003-05-30') && !id.startsWith('LT04') && !id.startsWith('LM'),
+       attr:'Landsat imagery courtesy of NASA/USGS via Microsoft Planetary Computer · Search © OpenStreetMap',
+       modes:[ ['scene','Every clear pass · last 12 months',{from:()=>monthsAgo(12), maxCloud:30}],
+               ['quarter','Clearest each quarter · since 2013',{from:()=>'2013-01-01', maxCloud:50, group:'q'}],
+               ['year','Clearest each year · since 1984',{from:()=>'1984-01-01', maxCloud:40, group:'y'}, true] ] }
+};
+const modeCfg = () => SCENE_SRC[S.src].modes.find(m=> m[0]===$('s2int').value)[2];
+function fillModes(src){
+  const sel=$('s2int'); sel.innerHTML='';
+  SCENE_SRC[src].modes.forEach(m=>{ const o=document.createElement('option'); o.value=m[0]; o.textContent=m[1]; if(m[3]) o.selected=true; sel.appendChild(o); });
+}
 function monthsAgo(n){ const d=new Date(); d.setMonth(d.getMonth()-n); return d.toISOString().slice(0,10); }
-async function searchScenes(ll, mode){
-  const cfg = S2S_MODES[mode];
-  const body = { collections:['sentinel-2-l2a'], intersects:{type:'Point', coordinates:[ll.lng, ll.lat]},
+async function searchScenes(ll){
+  const src = SCENE_SRC[S.src], cfg = modeCfg();
+  const body = { collections:[src.collection], intersects:{type:'Point', coordinates:[ll.lng, ll.lat]},
     datetime: cfg.from()+'T00:00:00Z/..', limit:1000, query:{'eo:cloud_cover':{lt:cfg.maxCloud}},
     sortby:[{field:'datetime', direction:'desc'}],
     fields:{include:['id','properties.datetime','properties.eo:cloud_cover'], exclude:['assets','links','geometry','bbox']} };
@@ -868,22 +889,24 @@ async function searchScenes(ll, mode){
     if(!rr.ok) break; js = await rr.json(); feats = feats.concat(js.features||[]);
   }
   const byDay = new Map();
-  feats.forEach(f=>{ const d=f.properties.datetime.slice(0,10), c=f.properties['eo:cloud_cover']??100, cur=byDay.get(d); if(!cur || c<cur.c) byDay.set(d,{id:f.id,d,c}); });
+  feats.forEach(f=>{ const d=f.properties.datetime.slice(0,10), c=f.properties['eo:cloud_cover']??100, cur=byDay.get(d);
+    if(src.keep && !src.keep(f.id,d)) return; if(!cur || c<cur.c) byDay.set(d,{id:f.id,d,c}); });
   let sc = [...byDay.values()];
-  if(cfg.group){ const g=new Map(); sc.forEach(x=>{ const k = cfg.group==='m' ? x.d.slice(0,7) : x.d.slice(0,4)+'Q'+(Math.floor((+x.d.slice(5,7)-1)/3)+1); const cur=g.get(k); if(!cur || x.c<cur.c) g.set(k,x); }); sc=[...g.values()]; }
+  if(cfg.group){ const g=new Map(); sc.forEach(x=>{ const k = cfg.group==='m' ? x.d.slice(0,7) : cfg.group==='y' ? x.d.slice(0,4) : x.d.slice(0,4)+'Q'+(Math.floor((+x.d.slice(5,7)-1)/3)+1); const cur=g.get(k); if(!cur || x.c<cur.c) g.set(k,x); }); sc=[...g.values()]; }
   sc.sort((a,b)=> b.d.localeCompare(a.d));
-  return sc.map(x=>({s2s:true, id:x.id, cloud:x.c, releaseNum:null, releaseDateLabel:x.d, releaseDatetime:Date.parse(x.d), itemURL:pcTile(x.id)}));
+  return sc.map(x=>({s2s:true, srcKey:S.src, label:src.label, res:src.res, maxNative:src.maxNative, thumbZ:src.thumbZ, sceneKm:src.sceneKm, attr:src.attr,
+    id:x.id, cloud:x.c, releaseNum:null, releaseDateLabel:x.d, releaseDatetime:Date.parse(x.d), itemURL:src.tile(x.id)}));
 }
 let s2sKey = null;
 async function loadScenes(){
-  const ll = S.pin || map.getCenter(), key = `${ll.lat.toFixed(3)},${ll.lng.toFixed(3)},${$('s2int').value}`;
-  if(key === s2sKey && S.items.length && S.items[0].s2s) return true;
-  $('meta').textContent = 'Searching Sentinel-2 passes over this spot…';
-  try{ const sc = await searchScenes(ll, $('s2int').value); if(!sc.length){ toast('No clear Sentinel-2 passes found here for that period.'); return false; }
+  const ll = S.pin || map.getCenter(), key = `${S.src},${ll.lat.toFixed(3)},${ll.lng.toFixed(3)},${$('s2int').value}`;
+  if(key === s2sKey && S.items.length && S.items[0].srcKey===S.src) return true;
+  $('meta').textContent = `Searching ${SCENE_SRC[S.src].label} passes over this spot…`;
+  try{ const sc = await searchScenes(ll); if(!sc.length){ toast(`No clear ${SCENE_SRC[S.src].label} passes found here for that period.`); return false; }
     S.items = sc; s2sKey = key; fillSelects(); if(layB){ map.removeLayer(layB); layB=null; } setRelease(0);
     if(S.compare){ setReleaseB(Math.min(S.items.length-1, 6)); layB.addTo(map); }
     return true;
-  }catch(e){ toast('Could not reach the Sentinel-2 archive. Try again in a moment.'); $('meta').textContent='Sentinel-2 archive unavailable right now.'; return false; }
+  }catch(e){ toast(`Could not reach the ${SCENE_SRC[S.src].label} archive. Try again in a moment.`); $('meta').textContent=`${SCENE_SRC[S.src].label} archive unavailable right now.`; return false; }
 }
 const tpl = it => it.itemURL.replace('{level}','{z}').replace('{row}','{y}').replace('{col}','{x}').replace('//wayback.maptiles','//{s}.maptiles');
 const tileURL = (it,z,x,y) => it.itemURL.replace('{level}',z).replace('{row}',y).replace('{col}',x);
@@ -895,7 +918,7 @@ L.control.zoom({position:'topright'}).addTo(map);
 ['imgA','imgB','ref'].forEach((p,i)=> map.createPane(p).style.zIndex = 250 + i*50);
 const paneB = map.getPane('imgB');
 const ATTR = 'Imagery © Esri, Maxar, Earthstar Geographics & the GIS User Community · Wayback © Esri · Search © OpenStreetMap';
-const tOpts = (pane,it) => ({pane, subdomains:['wayback','wayback-a','wayback-b'], maxNativeZoom:nativeMax(it), maxZoom:21, minZoom: it.s2s ? 8 : 0, attribution: it.s2s ? 'Sentinel-2 L2A (contains modified Copernicus Sentinel data) via Microsoft Planetary Computer · Search © OpenStreetMap' : it.s2 ? 'Sentinel-2 cloudless © EOX IT Services GmbH (contains modified Copernicus Sentinel data) · Search © OpenStreetMap' : ATTR});
+const tOpts = (pane,it) => ({pane, subdomains:['wayback','wayback-a','wayback-b'], maxNativeZoom:nativeMax(it), maxZoom:21, minZoom: it.s2s ? 8 : 0, attribution: it.s2s ? it.attr : it.s2 ? 'Sentinel-2 cloudless © EOX IT Services GmbH (contains modified Copernicus Sentinel data) · Search © OpenStreetMap' : ATTR});
 let layA = L.tileLayer(CURRENT, {pane:'imgA', maxNativeZoom:19, maxZoom:21, attribution:ATTR}).addTo(map);
 let layB = null;
 const ref = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {pane:'ref', maxNativeZoom:19, maxZoom:21}).addTo(map);
@@ -928,8 +951,8 @@ function fillSelects(){
 async function setSource(src){
   S.src = src; $('src').value = src;
   $('detail').style.display = src==='esri' ? '' : 'none';
-  $('s2int').style.display = src==='s2s' ? '' : 'none';
-  if(src==='s2s'){ if(map.getZoom()>15) map.setZoom(14); if(map.getZoom()<9) map.setZoom(12); openTT(true); if(await loadScenes()) buildStrip(); saveHash(); return; }
+  $('s2int').style.display = SCENE_SRC[src] ? '' : 'none';
+  if(SCENE_SRC[src]){ fillModes(src); if(map.getZoom()>15) map.setZoom(14); if(map.getZoom()<9) map.setZoom(12); openTT(true); if(await loadScenes()) buildStrip(); saveHash(); return; }
   S.items = src==='s2' ? S2_ITEMS : S.esri;
   if(!S.items.length){ toast('The Esri version list is not loaded.'); return; }
   fillSelects(); if(layB){ map.removeLayer(layB); layB=null; }
@@ -954,7 +977,7 @@ function updateMeta(){
   metaTimer = setTimeout(async ()=>{
     const it = S.items[S.idx]; if(!it) return;
     const z = Math.round(map.getZoom()), c = map.getCenter(), my = ++metaSeq;
-    if(it.s2s){ $('meta').innerHTML = `Sentinel-2 pass on <b>${fmtDate(it.releaseDatetime)}</b> · ☁ ${Math.round(it.cloud)}% of the whole 110 km scene · 10 m/pixel · ${S.items.length} passes listed`; return; }
+    if(it.s2s){ $('meta').innerHTML = `${it.label} pass on <b>${fmtDate(it.releaseDatetime)}</b> · ☁ ${Math.round(it.cloud)}% of the whole ${it.sceneKm} km scene · ${it.res}/pixel · ${S.items.length} passes listed`; return; }
     if(it.s2){ $('meta').innerHTML = `Sentinel-2 cloud-free mosaic of <b>${it.releaseDateLabel}</b> · 10 m/pixel · best for big changes like ports, mines, new towns`; return; }
     const relTxt = `Version of <b>${it.releaseDateLabel}</b>`;
     if(z < 10){ $('meta').innerHTML = relTxt + ' · zoom in to see when the photo was taken'; return; }
@@ -1026,7 +1049,7 @@ function setPin(ll){
   else pinM.setLatLng(S.pin);
   $('coords').textContent = `${S.pin.lat.toFixed(5)}, ${S.pin.lng.toFixed(5)}`;
   openTT(true); saveHash();
-  if(S.src==='s2s'){ loadScenes().then(ok=>{ if(ok) buildStrip(); }); } else buildStrip();
+  if(SCENE_SRC[S.src]){ loadScenes().then(ok=>{ if(ok) buildStrip(); }); } else buildStrip();
 }
 /* fractional tile position of the pin */
 function tilePos(z){ const n=2**z, lat=S.pin.lat*Math.PI/180;
@@ -1048,7 +1071,7 @@ async function buildStrip(){
   strip.innerHTML='<div class="hint" style="padding:20px 4px">Finding every version where this spot changed…</div>'; hist=[];
   let found;
   if(S.src==='s2') found = S2_ITEMS.slice();
-  else if(S.src==='s2s') found = S.items.slice();
+  else if(SCENE_SRC[S.src]) found = S.items.slice();
   else try{
     /* check a 3×3 block of map squares around the pin, so big sites (ports, airports) aren't missed
        when the pin itself sits on water or unchanged ground */
@@ -1073,11 +1096,11 @@ async function buildStrip(){
     const idx = S.items.findIndex(x=> x.itemURL===it.itemURL);
     const el=document.createElement('div'); el.className='card'; el.dataset.idx=idx;
     el.innerHTML=`<div class="ph"></div><div class="m"><b>…</b><span>version ${it.releaseDateLabel}</span></div>`;
-    fillView(el.querySelector('.ph'), it, (it.s2||it.s2s) ? 13 : z-2, cs);
+    fillView(el.querySelector('.ph'), it, it.s2s ? it.thumbZ : it.s2 ? 13 : z-2, cs);
     strip.appendChild(el);
     const h={it, idx, el, taken:null, meta:null}; hist.push(h);
     el.onclick=()=> openLB(hist.indexOf(h));
-    if(it.s2s){ el.querySelector('b').textContent = fmtDate(it.releaseDatetime); el.querySelector('span').textContent = `☁ ${Math.round(it.cloud)}% scene · 10 m`; return; }
+    if(it.s2s){ el.querySelector('b').textContent = fmtDate(it.releaseDatetime); el.querySelector('span').textContent = `☁ ${Math.round(it.cloud)}% scene · ${it.res}`; return; }
     if(it.s2){ el.querySelector('b').textContent = 'Year ' + it.releaseDateLabel; el.querySelector('span').textContent = 'Sentinel-2 · 10 m'; return; }
     Wayback.getMetadata({longitude:S.pin.lng, latitude:S.pin.lat}, z+2, it.releaseNum).then(m=>{
       if(my!==gen) return; h.meta=m;
@@ -1087,8 +1110,8 @@ async function buildStrip(){
   });
   document.querySelectorAll('.card').forEach(c=> c.classList.toggle('cur', +c.dataset.idx===S.idx));
   requestAnimationFrame(()=> strip.scrollLeft=strip.scrollWidth);
-  $('ttHint').textContent = S.src==='s2s'
-    ? `${found.length} Sentinel-2 passes, newest on the right (${fmtDate(found[0].releaseDatetime)} → ${fmtDate(found[found.length-1].releaseDatetime)}). ☁ is for the whole 110 km scene, so your spot may still be clear or cloudy.`
+  $('ttHint').textContent = SCENE_SRC[S.src]
+    ? `${found.length} ${found[0].label} passes, newest on the right (${fmtDate(found[0].releaseDatetime)} → ${fmtDate(found[found.length-1].releaseDatetime)}). ☁ is for the whole ${found[0].sceneKm} km scene, so your spot may still be clear or cloudy.${S.src==='ls'?' Landsat 30 m shows large changes (ports, reservoirs, cities), not buildings.':''}`
     : S.src==='s2'
     ? 'One cloud-free 10 m picture per year (2017 is not published). Tap one to enlarge, or play the time-lapse.'
     : `${found.length} different photos of the area around the pin since ${found[0].releaseDateLabel.slice(0,4)}. Dates are when each photo was taken. Few versions? Esri may simply not have newer photos here — try “Sentinel-2 yearly”.`;
@@ -1096,8 +1119,8 @@ async function buildStrip(){
 
 /* ---------- lightbox ---------- */
 let lbI=0, lbTimer=null, lbZ=null, lbZsrc=null;
-const lbDefaultZ = ()=> S.src!=='esri' ? (window.innerWidth<600?13:14) : (+$('detail').value - (window.innerWidth<600?1:0));
-function lbClampZ(){ lbZ = Math.max(10, Math.min(S.src==='s2'?15:S.src==='s2s'?16:19, lbZ)); }
+const lbDefaultZ = ()=> S.src==='ls' ? (window.innerWidth<600?12:13) : S.src!=='esri' ? (window.innerWidth<600?13:14) : (+$('detail').value - (window.innerWidth<600?1:0));
+function lbClampZ(){ lbZ = Math.max(9, Math.min(S.src==='s2'?15:S.src==='s2s'?16:S.src==='ls'?14:19, lbZ)); }
 function lbSize(){ return Math.max(256, Math.min(window.innerWidth-12, window.innerHeight-150, 900)); }
 function openLB(i){ if(!hist.length){ toast(S.pin?'Still loading…':'Drop a pin on the map first.'); return; } lbI=i;
   if(lbZ===null || lbZsrc!==S.src){ lbZ=lbDefaultZ(); lbZsrc=S.src; } lbClampZ(); $('lb').classList.add('on');
@@ -1105,8 +1128,8 @@ function openLB(i){ if(!hist.length){ toast(S.pin?'Still loading…':'Drop a pin
 function showLB(){
   const h=hist[lbI], z = lbZ;
   fillView($('lbView'), h.it, z, lbSize());
-  $('lbTitle').textContent = h.it.s2s ? 'Sentinel-2 pass · ' + fmtDate(h.it.releaseDatetime) : h.it.s2 ? 'Sentinel-2 · year ' + h.it.releaseDateLabel : h.meta ? 'Photo taken ' + fmtDate(h.meta.date) : 'Version ' + h.it.releaseDateLabel;
-  $('lbSub').textContent = `${lbI+1} of ${hist.length}` + (h.it.s2 ? ' · 10 m/pixel cloud-free mosaic' : h.it.s2s ? ` · 10 m/pixel · ☁ ${Math.round(h.it.cloud)}% scene` : '') + (h.meta ? ` · ${h.meta.provider||h.meta.source||''}${h.meta.resolution? ' · '+h.meta.resolution+' m/pixel':''}` : '');
+  $('lbTitle').textContent = h.it.s2s ? h.it.label + ' pass · ' + fmtDate(h.it.releaseDatetime) : h.it.s2 ? 'Sentinel-2 · year ' + h.it.releaseDateLabel : h.meta ? 'Photo taken ' + fmtDate(h.meta.date) : 'Version ' + h.it.releaseDateLabel;
+  $('lbSub').textContent = `${lbI+1} of ${hist.length}` + (h.it.s2 ? ' · 10 m/pixel cloud-free mosaic' : h.it.s2s ? ` · ${h.it.res}/pixel · ☁ ${Math.round(h.it.cloud)}% scene` : '') + (h.meta ? ` · ${h.meta.provider||h.meta.source||''}${h.meta.resolution? ' · '+h.meta.resolution+' m/pixel':''}` : '');
   const km = lbSize()/256 * 40075*Math.cos(S.pin.lat*Math.PI/180)/2**z;
   $('lbSub').textContent += ` · view ≈ ${km>=1? km.toFixed(1)+' km' : Math.round(km*1000)+' m'} wide`;
   [...$('lbBar').children].forEach((b,j)=> b.classList.toggle('c', j===lbI));
@@ -1121,7 +1144,7 @@ $('lbPlayBtn').onclick=()=> lbTimer? lbStop(): lbStart();
 $('lbSpeed').onchange=()=>{ if(lbTimer) lbStart(); };
 $('lbPrev').onclick=()=>{lbStop();lbStep(-1);}; $('lbNext').onclick=()=>{lbStop();lbStep(1);};
 $('lbClose').onclick=()=>{ lbStop(); $('lb').classList.remove('on'); };
-$('lbMap').onclick=()=>{ const h=hist[lbI]; lbStop(); $('lb').classList.remove('on'); if(h.idx>=0) setRelease(h.idx); map.setView(S.pin, (h.it.s2||h.it.s2s) ? 14 : Math.max(map.getZoom(),17)); };
+$('lbMap').onclick=()=>{ const h=hist[lbI]; lbStop(); $('lb').classList.remove('on'); if(h.idx>=0) setRelease(h.idx); map.setView(S.pin, h.it.s2s && h.it.srcKey==='ls' ? 13 : (h.it.s2||h.it.s2s) ? 14 : Math.max(map.getZoom(),17)); };
 $('ttPlay').onclick=()=>{ openLB(0); if(hist.length) lbStart(); };
 (()=>{ let x0=null; const st=$('lbStage');
   st.addEventListener('touchstart',e=>x0=e.touches[0].clientX,{passive:true});
@@ -1162,7 +1185,7 @@ window.addEventListener('resize',()=>{fitHeader();clip();});
     S.esri = await Wayback.getWaybackItems();   // newest first
     if(!S.esri.length) throw new Error('empty');
   }catch(e){ S.esri = []; }
-  if(wantSrc==='s2s'){ if(pin) setPinOnly(pin); await setSource('s2s'); saveHash(); return; }
+  if(SCENE_SRC[wantSrc]){ if(pin) setPinOnly(pin); await setSource(wantSrc); saveHash(); return; }
   const wantS2 = wantSrc==='s2';
   if(S.esri.length && !wantS2){
     S.items = S.esri; fillSelects();
