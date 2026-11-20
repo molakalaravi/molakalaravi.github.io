@@ -814,6 +814,7 @@ select option{background:#121924}
   <div id="lbTop">
     <div><div id="lbTitle"></div><div id="lbSub"></div></div>
     <span class="grow"></span>
+    <button class="btn sm" id="lbOut" title="Zoom out">−</button><button class="btn sm" id="lbIn" title="Zoom in">+</button>
     <button class="btn sm" id="lbPlayBtn">▶ Play</button>
     <select id="lbSpeed"><option value="1800">Slow</option><option value="1100" selected>Normal</option><option value="600">Fast</option></select>
     <button class="btn sm" id="lbMap">Show on map</button>
@@ -951,7 +952,7 @@ $('search').addEventListener('input', e=>{
 function showResults(list){
   const box=$('results'); box.innerHTML=''; if(!list.length){box.style.display='none';return;}
   list.forEach(it=>{ const d=document.createElement('div'); d.textContent=it.display_name;
-    d.onclick=()=>{ box.style.display='none'; $('search').value=it.display_name.split(',')[0]; const ll=L.latLng(+it.lat,+it.lon); map.setView(ll,17); setPin(ll); };
+    d.onclick=()=>{ box.style.display='none'; $('search').value=it.display_name.split(',')[0]; const ll=L.latLng(+it.lat,+it.lon); map.setView(ll, S.src==='s2'?13:15); setPin(ll); };
     box.appendChild(d); });
   box.style.display='block';
 }
@@ -1016,7 +1017,7 @@ async function buildStrip(){
     const idx = S.items.findIndex(x=> x.itemURL===it.itemURL);
     const el=document.createElement('div'); el.className='card'; el.dataset.idx=idx;
     el.innerHTML=`<div class="ph"></div><div class="m"><b>…</b><span>version ${it.releaseDateLabel}</span></div>`;
-    fillView(el.querySelector('.ph'), it, it.s2 ? 13 : z+1, cs);
+    fillView(el.querySelector('.ph'), it, it.s2 ? 13 : z-2, cs);
     strip.appendChild(el);
     const h={it, idx, el, taken:null, meta:null}; hist.push(h);
     el.onclick=()=> openLB(hist.indexOf(h));
@@ -1035,21 +1036,28 @@ async function buildStrip(){
 }
 
 /* ---------- lightbox ---------- */
-let lbI=0, lbTimer=null;
+let lbI=0, lbTimer=null, lbZ=null, lbZsrc=null;
+const lbDefaultZ = ()=> S.src==='s2' ? (window.innerWidth<600?13:14) : (+$('detail').value - (window.innerWidth<600?1:0));
+function lbClampZ(){ lbZ = Math.max(10, Math.min(S.src==='s2'?15:19, lbZ)); }
 function lbSize(){ return Math.max(256, Math.min(window.innerWidth-12, window.innerHeight-150, 900)); }
-function openLB(i){ if(!hist.length){ toast(S.pin?'Still loading…':'Drop a pin on the map first.'); return; } lbI=i; $('lb').classList.add('on');
+function openLB(i){ if(!hist.length){ toast(S.pin?'Still loading…':'Drop a pin on the map first.'); return; } lbI=i;
+  if(lbZ===null || lbZsrc!==S.src){ lbZ=lbDefaultZ(); lbZsrc=S.src; } lbClampZ(); $('lb').classList.add('on');
   $('lbBar').innerHTML=''; hist.forEach((h,j)=>{ const b=document.createElement('i'); b.onclick=()=>{lbStop();lbI=j;showLB();}; $('lbBar').appendChild(b); }); showLB(); }
 function showLB(){
-  const h=hist[lbI], z = h.it.s2 ? 15 : Math.min(19, +$('detail').value + 2);
+  const h=hist[lbI], z = lbZ;
   fillView($('lbView'), h.it, z, lbSize());
   $('lbTitle').textContent = h.it.s2 ? 'Sentinel-2 · year ' + h.it.releaseDateLabel : h.meta ? 'Photo taken ' + fmtDate(h.meta.date) : 'Version ' + h.it.releaseDateLabel;
   $('lbSub').textContent = `${lbI+1} of ${hist.length}` + (h.it.s2 ? ' · 10 m/pixel cloud-free mosaic' : '') + (h.meta ? ` · ${h.meta.provider||h.meta.source||''}${h.meta.resolution? ' · '+h.meta.resolution+' m/pixel':''}` : '');
+  const km = lbSize()/256 * 40075*Math.cos(S.pin.lat*Math.PI/180)/2**z;
+  $('lbSub').textContent += ` · view ≈ ${km>=1? km.toFixed(1)+' km' : Math.round(km*1000)+' m'} wide`;
   [...$('lbBar').children].forEach((b,j)=> b.classList.toggle('c', j===lbI));
   const n=hist[lbI+1]; if(n){ const p=tilePos(z); [0,1].forEach(dx=>{ const im=new Image(); im.src=tileURL(n.it,z,Math.floor(p.x)+dx,Math.floor(p.y)); }); }
 }
 const lbStep=d=>{ lbI=(lbI+d+hist.length)%hist.length; showLB(); };
 function lbStop(){ clearInterval(lbTimer); lbTimer=null; $('lbPlayBtn').textContent='▶ Play'; $('lbPlayBtn').classList.remove('on'); }
 function lbStart(){ lbStop(); $('lbPlayBtn').textContent='❚❚ Pause'; $('lbPlayBtn').classList.add('on'); lbTimer=setInterval(()=>lbStep(1), +$('lbSpeed').value); }
+$('lbIn').onclick=()=>{ lbZ++; lbClampZ(); showLB(); };
+$('lbOut').onclick=()=>{ lbZ--; lbClampZ(); showLB(); };
 $('lbPlayBtn').onclick=()=> lbTimer? lbStop(): lbStart();
 $('lbSpeed').onchange=()=>{ if(lbTimer) lbStart(); };
 $('lbPrev').onclick=()=>{lbStop();lbStep(-1);}; $('lbNext').onclick=()=>{lbStop();lbStep(1);};
@@ -1063,6 +1071,8 @@ document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT') return; const on=$('lb').classList.contains('on');
   if(e.key==='ArrowLeft') on? (lbStop(),lbStep(-1)) : $('older').click();
   else if(e.key==='ArrowRight') on? (lbStop(),lbStep(1)) : $('newer').click();
+  else if(on && (e.key==='+'||e.key==='=')) $('lbIn').click();
+  else if(on && e.key==='-') $('lbOut').click();
   else if(e.key==='Escape'&&on) $('lbClose').click();
   else if(e.key===' '&&on){ e.preventDefault(); $('lbPlayBtn').click(); }
 });
